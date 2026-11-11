@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Gerador Satoshi Legacy</title>
+<title>Gerador Satoshi Legacy - CORRIGIDO</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/elliptic/6.5.4/elliptic.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
 <style>
@@ -15,10 +15,11 @@ button{background:#f7931a;color:#000;border:none;padding:16px 25px;font-size:18p
 .verde{color:#2ecc71}
 .label{color:#aaa;font-size:12px}
 input{width:100%;background:#000;color:#fff;border:1px solid #333;padding:10px;margin-top:8px;font-family:monospace}
+.ok{color:#2ecc71;font-weight:bold}
 </style>
 </head>
 <body>
-<h2>Gerador Legacy P2PKH</h2>
+<h2>Gerador Legacy P2PKH - Checksum Válido</h2>
 <p>Estilo Satoshi - Chave 5... + Endereço 1...</p>
 <button onclick="gerar()">GERAR NOVA</button>
 
@@ -26,6 +27,7 @@ input{width:100%;background:#000;color:#fff;border:1px solid #333;padding:10px;m
 <div class="label">CHAVE PRIVADA - NUNCA MOSTRE</div>
 <div id="priv">Clique em GERAR</div>
 <input id="privCopy" readonly onclick="this.select()">
+<div id="validacao"></div>
 </div>
 
 <div class="box">
@@ -36,9 +38,20 @@ input{width:100%;background:#000;color:#fff;border:1px solid #333;padding:10px;m
 
 <script>
 const ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+// --- CORREÇÃO 1: Conversão bytes <-> Hex correta ---
+function bytesToHex(bytes){
+  let h = "";
+  for(let i=0;i<bytes.length;i++){ h += ("0"+bytes[i].toString(16)).slice(-2); }
+  return h;
+}
+function hexToBytes(hex){
+  let out = [];
+  for(let i=0;i<hex.length;i+=2) out.push(parseInt(hex.substr(i,2),16));
+  return out;
+}
 function base58Encode(bytes){
-  let hex = "";
-  for(let i=0;i<bytes.length;i++){ hex += ("0"+bytes[i].toString(16)).slice(-2); }
+  let hex = bytesToHex(bytes);
   let bi = BigInt("0x"+hex);
   let s = "";
   if(bi===0n) return "1";
@@ -46,19 +59,29 @@ function base58Encode(bytes){
   for(let i=0;i<bytes.length && bytes[i]===0;i++){ s = "1"+s; }
   return s;
 }
+function base58Decode(str){
+  let n = 0n;
+  for(let c of str){ n = n*58n + BigInt(ALPHABET.indexOf(c)); }
+  let hex = n.toString(16);
+  if(hex.length % 2 === 1) hex = "0"+hex;
+  let bytes = hexToBytes(hex);
+  let pad = 0;
+  for(let c of str){ if(c==="1") pad++; else break; }
+  return new Array(pad).fill(0).concat(bytes);
+}
+
+// --- CORREÇÃO 2: SHA256 e RIPEMD usando Hex.parse, não WordArray.create ---
 function sha256Bytes(bytes){
-  let wa = CryptoJS.lib.WordArray.create(bytes);
+  let hex = bytesToHex(bytes);
+  let wa = CryptoJS.enc.Hex.parse(hex);
   let h = CryptoJS.SHA256(wa);
-  let out = [];
-  for(let i=0;i<h.words.length;i++){ let w=h.words[i]; out.push((w>>24)&255,(w>>16)&255,(w>>8)&255,w&255); }
-  return out;
+  return hexToBytes(h.toString(CryptoJS.enc.Hex));
 }
 function ripemdBytes(bytes){
-  let wa = CryptoJS.lib.WordArray.create(bytes);
+  let hex = bytesToHex(bytes);
+  let wa = CryptoJS.enc.Hex.parse(hex);
   let h = CryptoJS.RIPEMD160(wa);
-  let out = [];
-  for(let i=0;i<h.words.length;i++){ let w=h.words[i]; out.push((w>>24)&255,(w>>16)&255,(w>>8)&255,w&255); }
-  return out;
+  return hexToBytes(h.toString(CryptoJS.enc.Hex));
 }
 function checkEncode(versionByte, payload){
   let data = [versionByte].concat(payload);
@@ -67,20 +90,30 @@ function checkEncode(versionByte, payload){
   let full = data.concat(c2.slice(0,4));
   return base58Encode(full);
 }
+// Valida checksum na hora
+function validaChecksum(wif){
+  try{
+    let dec = base58Decode(wif);
+    if(dec.length !== 37) return false;
+    let payload = dec.slice(0, dec.length-4);
+    let dado = dec.slice(dec.length-4);
+    let calc = sha256Bytes(sha256Bytes(payload)).slice(0,4);
+    return bytesToHex(dado) === bytesToHex(calc);
+  }catch(e){ return false; }
+}
+
 function gerar(){
   try{
     let priv = new Uint8Array(32);
     window.crypto.getRandomValues(priv);
     let privArr = Array.from(priv);
-    // WIF Legacy 5...
     let wif = checkEncode(0x80, privArr);
-    // Chave publica descomprimida 04 + X + Y
+
     let ec = new elliptic.ec('secp256k1');
     let key = ec.keyFromPrivate(priv);
-    let pubHex = key.getPublic(false, 'hex'); // 04...
-    let pubBytes = [];
-    for(let i=0;i<pubHex.length;i+=2) pubBytes.push(parseInt(pubHex.substr(i,2),16));
-    // Endereco 1...
+    let pubHex = key.getPublic(false, 'hex');
+    let pubBytes = hexToBytes(pubHex);
+
     let h1 = sha256Bytes(pubBytes);
     let h160 = ripemdBytes(h1);
     let addr = checkEncode(0x00, h160);
@@ -90,8 +123,12 @@ function gerar(){
     document.getElementById('privCopy').value = wif;
     document.getElementById('addr').innerHTML = '<b style="font-size:18px">'+addr+'</b>';
     document.getElementById('addrCopy').value = addr;
+
+    let ok = validaChecksum(wif);
+    document.getElementById('validacao').innerHTML = ok ? '<div class="ok">✅ Checksum VÁLIDO - Pode importar em qualquer carteira</div>' : '<div style="color:red">❌ Checksum INVÁLIDO</div>';
+
   }catch(e){
-    document.getElementById('priv').innerHTML = "Erro: "+e.message+"<br>Tenta abrir no Chrome, não no visualizador do WhatsApp.";
+    document.getElementById('priv').innerHTML = "Erro: "+e.message+"<br>Abre no Chrome, não no visualizador do WhatsApp.";
   }
 }
 </script>
